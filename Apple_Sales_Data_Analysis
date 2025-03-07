@@ -1,0 +1,215 @@
+-- Apple sales project 1 million rows of sales data -- 
+SELECT * FROM category
+SELECT * FROM products
+SELECT * FROM sales
+SELECT * FROM stores
+SELECT * FROM warranty
+
+-- EDA --
+SELECT DISTINCT repair_status FROM warrantly;
+SELECT COUNT(*) FROM sales;
+
+-- Improving Query Performance
+-- pt: 0.23 / execution time: 50.7 
+-- after 'create INDEX' pt: 0.54 et: 9.39
+-- what is index? it like a table of content for a book,it label where to look for a data 
+
+EXPLAIN ANALYZE
+SELECT * FROM sales
+WHERE  product_id = 'P-44'
+
+CREATE INDEX sales_product_id ON sales(product_id);
+
+EXPLAIN ANALYZE
+SELECT * FROM sales
+WHERE product_id = 'ST-31'
+
+-- Business Problems
+-- 1.Find the number of stores in each country
+SELECT 
+	country, 
+	COUNT(store_id) AS total_store
+FROM stores 
+GROUP BY 1
+ORDER BY 2 DESC;
+
+-- 2.Calculate the total number of units sold by each store
+SELECT
+    st.store_name,
+    s.store_id,
+    SUM(s.quantity) AS total_unit_sold
+FROM sales AS s
+JOIN stores AS st
+ON s.store_id = st.store_id
+GROUP BY st.store_name, s.store_id
+ORDER BY total_unit_sold DESC;
+
+-- 3.Identify how many sales occured in December 2023
+SELECT 
+	COUNT(sale_id) AS total_sale
+FROM sales
+WHERE to_char(sale_date, 'MM-YYYY') = '12-2023'; --keep this approach in mind when u want explore specific timeline
+
+-- 4. Determine how many store have never had a warrantly calim filed.
+SELECT 
+    COUNT(*)
+FROM stores
+WHERE store_id NOT IN (
+    SELECT DISTINCT store_id
+    FROM sales AS s
+    JOIN warranty AS w
+    ON s.sale_id = w.sale_id
+);
+
+-- 5. Calculate the percentage of warranty claims marked as "Warranty Void"
+SELECT 
+	ROUND(COUNT(claim_id) / (SELECT COUNT(*) FROM warranty)::numeric * 100, 2) AS warranty_void_percentage
+FROM warranty
+WHERE repair_status = 'Warranty Void';
+
+-- 6. identify which store had the highest total units sold on the last year
+SELECT 
+	s.store_id,
+	st.store_name,
+	SUM(s.quantity)
+FROM sales as s
+JOIN stores as st
+ON s.store_id = st.store_id
+WHERE sale_date >= (CURRENT_DATE - INTERVAL '1 year')
+GROUP BY 1, 2
+ORDER BY 3 DESC
+LIMIT 1
+
+-- 7. Count the number of unique products sold in the last year.
+
+SELECT 
+	COUNT(DISTINCT product_id)
+FROM sales
+WHERE sale_date >= (CURRENT_DATE - INTERVAL '1 year')
+
+-- 8. Find the average price of products in each category.
+select 
+	c.category_name, 
+	round(avg(p.price)::numeric, 2) as avg_price_each_cat
+from products as p
+join category as c
+on c.category_id = p.category_id
+group by c.category_name
+order by avg_price_each_cat DESC
+
+-- 9. How many warranty claims were filed in 2020?
+select 
+	count(claim_id)
+from warranty
+WHERE extract(year from claim_date) = 2020
+
+-- 10. For each store, identify the best-selling day based on highest quantity sold.
+-- store name, day, sum(quantity)
+SELECT *
+FROM (
+    SELECT 
+        store_id,
+        TO_CHAR(sale_date, 'day') AS day_name,
+        SUM(quantity) AS total_quantity, 
+        RANK() OVER(PARTITION BY store_id ORDER BY SUM(quantity) DESC) AS rank
+    FROM sales
+    GROUP BY store_id, day_name
+) ranked_sales
+WHERE rank = 1
+; 
+
+-- 11. Identify least selling product of each country for each year based on total unit sold
+-- each country, year and total_q
+WITH rank_sales AS (
+    SELECT
+        EXTRACT(YEAR FROM s.sale_date) AS year,
+        st.country,
+        p.product_name,
+        SUM(s.quantity) AS total_q,
+        RANK() OVER (
+            PARTITION BY EXTRACT(YEAR FROM s.sale_date), st.country 
+            ORDER BY SUM(s.quantity) DESC
+        ) AS rnk
+    FROM sales AS s
+    JOIN stores AS st ON s.store_id = st.store_id
+    JOIN products AS p ON p.product_id = s.product_id
+    GROUP BY st.country, p.product_name, year
+    ORDER BY country, year DESC, total_q 
+) 
+
+SELECT year, country, product_name, total_q
+FROM rank_sales
+WHERE rnk = 1;
+	
+-- 12. How many warranty claims were filed within 180 days of a product sale?
+SELECT 
+    COUNT(*)
+FROM sales AS s
+JOIN warranty AS w ON s.sale_id = w.sale_id
+WHERE w.claim_date - s.sale_date <= 180;
+
+-- 13. How many warranty claims have been filed for products launched in the last two years?
+-- count warranty / each product / last 2 year
+-- Why RIGHT JOIN on warranty?
+-- A sale may or may not have a warranty claim. If we used an INNER JOIN between warranty and sales, we would only retrieve sales that have at least one claim.
+select 
+	p.product_name, 
+	count(w.claim_id),
+	count(s.sale_id)
+from warranty as w
+right join sales as s on w.sale_id = s.sale_id
+join products as p on s.product_id = p.product_id
+where p.launch_date >= current_date - interval '2 years'
+group by 1
+order by 2 desc
+
+-- 14. List the months in the last 3 years where sales exceeded 5000 units from usa.
+select 
+	to_char(s.sale_date, 'MM-YYYY') as month,
+	sum(quantity),
+	st.country
+from sales as s
+join stores as st
+on s.store_id = st.store_id
+where st.country = 'USA'
+	and sale_date >= current_date - interval '3 years'
+group by month, st.country
+having sum(quantity) > 5000  
+
+-- 15. Which product category had the most warranty claims filed in the last 2 years?
+SELECT 
+    c.category_name, 
+    COUNT(w.claim_id) AS warranty_claim_amount
+FROM warranty AS w
+JOIN sales AS s ON w.sale_id = s.sale_id 
+JOIN products AS p ON s.product_id = p.product_id
+JOIN category AS c ON p.category_id = c.category_id
+WHERE s.sale_date >= CURRENT_DATE - INTERVAL '2 years'
+GROUP BY c.category_name
+ORDER BY warranty_claim_amount DESC;
+
+-- 16. Determine the percentage chance of receiving warranty claims after each purchase for each country.
+SELECT 
+    country, 
+    total_unit_sold, 
+    total_warranty, 
+    COALESCE(total_warranty::NUMERIC / total_unit_sold::NUMERIC * 100, 0) AS chance -- Replace null values with 0
+FROM (
+    SELECT 
+        st.country, 
+        SUM(s.quantity) AS total_unit_sold, 
+        COUNT(w.claim_id) AS total_warranty
+    FROM sales AS s
+    JOIN stores AS st ON s.store_id = st.store_id
+    LEFT JOIN warranty AS w ON s.sale_id = w.sale_id
+    GROUP BY st.country
+) AS tl
+ORDER BY chance DESC;
+
+
+-- 17. Analyze the year-by-year growth ratio for each store.
+-- 18. Calculate the correlation between product price and warranty claims for products sold in the last five years, segmented by price range.
+-- 19. Identify the store with the highest percentage of "Paid Repaired" claims relative to total claims filed.
+-- 20. Write a query to calculate the monthly running total of sales for each store over the past four years and compare trends during this period.
+
+
